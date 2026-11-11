@@ -31,7 +31,7 @@ ALLOWED_CHANNELS = [
     1561852196641833050
 ]
 
-# التصنيفات التي ستظهر روماتها لرتبة تصريح لعب
+# التصنيفات الخاصة بتصريح لعب
 PLAY_CATEGORIES = [
     1561852151372849232,
     1561852150307496037,
@@ -48,7 +48,7 @@ PLAY_CATEGORIES = [
     1562110399195906220
 ]
 
-# أعداد التصويت
+# الأعداد المطلوبة لفتح الروم
 CITIZEN_LIMIT = 7
 MILITARY_LIMIT = 2
 
@@ -148,9 +148,8 @@ def create_embed():
     embed.add_field(
         name="👤 تصويت المواطنين",
         value=(
-            f"العدد المطلوب: **{CITIZEN_LIMIT}**\n"
-            f"الرتبة المطلوبة: <@&{CITIZEN_ROLE_ID}>\n"
-            f"عدد المصوتين: **{citizens} / {CITIZEN_LIMIT}**"
+            f"العدد المطلوب لفتح الروم: **{CITIZEN_LIMIT}**\n"
+            f"عدد المصوتين: **{citizens}**"
         ),
         inline=False
     )
@@ -158,9 +157,8 @@ def create_embed():
     embed.add_field(
         name="🚔 تصويت العساكر",
         value=(
-            f"العدد المطلوب: **{MILITARY_LIMIT}**\n"
-            f"الرتبة المطلوبة: <@&{MILITARY_ROLE_ID}>\n"
-            f"عدد المصوتين: **{military} / {MILITARY_LIMIT}**"
+            f"العدد المطلوب لفتح الروم: **{MILITARY_LIMIT}**\n"
+            f"عدد المصوتين: **{military}**"
         ),
         inline=False
     )
@@ -180,7 +178,8 @@ def create_embed():
             "• يجب امتلاك الرتبة المطلوبة للتصويت.\n"
             "• يسمح لكل عضو بتصويت واحد فقط.\n"
             "• يمكنك تغيير تصويتك أو إلغاؤه.\n"
-            "• لا يمكن تجاوز العدد المطلوب لكل قسم."
+            "• التصويت مفتوح دون حد أقصى.\n"
+            "• الأعداد المطلوبة هي شروط فتح الروم."
         ),
         inline=False
     )
@@ -229,6 +228,7 @@ class RoleVoteView(discord.ui.View):
             required_role = MILITARY_ROLE_ID
             vote_name = "عسكري"
 
+        # التحقق من الرتبة
         if not any(
             role.id == required_role
             for role in member.roles
@@ -245,6 +245,7 @@ class RoleVoteView(discord.ui.View):
 
             previous_vote = votes_data["voters"].get(user_id)
 
+            # منع تكرار نفس التصويت
             if previous_vote == vote_type:
                 await interaction.response.send_message(
                     "أنت مصوت في هذا القسم بالفعل.",
@@ -252,29 +253,10 @@ class RoleVoteView(discord.ui.View):
                 )
                 return
 
-            citizens, military = get_counts()
-
-            if previous_vote == "citizen":
-                citizens -= 1
-
-            elif previous_vote == "military":
-                military -= 1
-
-            if vote_type == "citizen" and citizens >= CITIZEN_LIMIT:
-                await interaction.response.send_message(
-                    "❌ اكتمل العدد المطلوب من المواطنين.",
-                    ephemeral=True
-                )
-                return
-
-            if vote_type == "military" and military >= MILITARY_LIMIT:
-                await interaction.response.send_message(
-                    "❌ اكتمل العدد المطلوب من العساكر.",
-                    ephemeral=True
-                )
-                return
-
+            # لا يوجد حد أقصى للتصويت
+            # يسمح بتغيير التصويت بين القسمين
             votes_data["voters"][user_id] = vote_type
+
             save_votes()
 
             await interaction.response.edit_message(
@@ -284,6 +266,7 @@ class RoleVoteView(discord.ui.View):
 
             print(f"{member} voted as {vote_name}")
 
+    # زر المواطنين
     @discord.ui.button(
         label="المواطنين",
         emoji="✅",
@@ -293,8 +276,12 @@ class RoleVoteView(discord.ui.View):
     )
     async def citizen_button(self, interaction, button):
 
-        await self.process_vote(interaction, "citizen")
+        await self.process_vote(
+            interaction,
+            "citizen"
+        )
 
+    # زر العساكر
     @discord.ui.button(
         label="العساكر",
         emoji="🚔",
@@ -304,8 +291,12 @@ class RoleVoteView(discord.ui.View):
     )
     async def military_button(self, interaction, button):
 
-        await self.process_vote(interaction, "military")
+        await self.process_vote(
+            interaction,
+            "military"
+        )
 
+    # زر إلغاء التصويت
     @discord.ui.button(
         label="إلغاء تصويتي",
         emoji="❌",
@@ -334,6 +325,7 @@ class RoleVoteView(discord.ui.View):
                 return
 
             del votes_data["voters"][user_id]
+
             save_votes()
 
             await interaction.response.edit_message(
@@ -396,8 +388,10 @@ async def create_role_poll(ctx):
 
     async with vote_lock:
 
+        # تصفير التصويت القديم
         votes_data["voters"] = {}
         votes_data["message_id"] = None
+
         save_votes()
 
         message = await ctx.send(
@@ -413,6 +407,7 @@ async def create_role_poll(ctx):
         )
 
         votes_data["message_id"] = message.id
+
         save_votes()
 
     print("NJ Poll Created Successfully")
@@ -434,7 +429,9 @@ async def hide_citizen_channels(ctx):
     citizen_role = guild.get_role(CITIZEN_ROLE_ID)
 
     if citizen_role is None:
-        await ctx.reply("❌ لم أجد رتبة المواطن.")
+        await ctx.reply(
+            "❌ لم أجد رتبة المواطن."
+        )
         return
 
     await ctx.reply(
@@ -558,7 +555,6 @@ async def show_play_categories(ctx):
 
                 overwrite = channel.overwrites_for(play_role)
 
-                # السماح بمشاهدة الروم فقط
                 overwrite.view_channel = True
 
                 await channel.set_permissions(
@@ -620,10 +616,12 @@ async def on_message(message):
     if message.guild is None:
         return
 
+    # معالجة الأوامر
     if message.content.startswith(("-", ".")):
         await bot.process_commands(message)
         return
 
+    # روم تسجيل الاسم
     if message.channel.id == NAME_CHANNEL_ID:
 
         name = message.content.strip()
@@ -638,6 +636,7 @@ async def on_message(message):
             return
 
         member = message.author
+
         play_role = message.guild.get_role(PLAY_ROLE_ID)
 
         if play_role is None:
@@ -648,17 +647,20 @@ async def on_message(message):
 
         try:
 
+            # تغيير لقب العضو
             await member.edit(
                 nick=f"NJ | {name}",
                 reason="NJ Name Registration"
             )
 
+            # إعطاء رتبة تصريح لعب
             if play_role not in member.roles:
                 await member.add_roles(
                     play_role,
                     reason="NJ Name Registration"
                 )
 
+            # حذف رسالة التسجيل
             await message.delete()
 
             print(
