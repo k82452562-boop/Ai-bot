@@ -31,6 +31,23 @@ ALLOWED_CHANNELS = [
     1561852196641833050
 ]
 
+# التصنيفات التي ستظهر روماتها لرتبة تصريح لعب
+PLAY_CATEGORIES = [
+    1561852151372849232,
+    1561852150307496037,
+    1563171000353558668,
+    1569663108128051291,
+    1561852153566597194,
+    1567926452320600177,
+    1561852155982385162,
+    1563542368727072858,
+    1561852152488665168,
+    1561852154627629097,
+    1561852157114851419,
+    1564262539481841774,
+    1562110399195906220
+]
+
 # أعداد التصويت
 CITIZEN_LIMIT = 7
 MILITARY_LIMIT = 2
@@ -212,7 +229,6 @@ class RoleVoteView(discord.ui.View):
             required_role = MILITARY_ROLE_ID
             vote_name = "عسكري"
 
-        # التحقق من الرتبة المطلوبة
         if not any(
             role.id == required_role
             for role in member.roles
@@ -229,7 +245,6 @@ class RoleVoteView(discord.ui.View):
 
             previous_vote = votes_data["voters"].get(user_id)
 
-            # منع تكرار نفس التصويت
             if previous_vote == vote_type:
                 await interaction.response.send_message(
                     "أنت مصوت في هذا القسم بالفعل.",
@@ -239,14 +254,12 @@ class RoleVoteView(discord.ui.View):
 
             citizens, military = get_counts()
 
-            # احتساب المقعد بعد إزالة التصويت القديم
             if previous_vote == "citizen":
                 citizens -= 1
 
             elif previous_vote == "military":
                 military -= 1
 
-            # التحقق من المقاعد المتاحة
             if vote_type == "citizen" and citizens >= CITIZEN_LIMIT:
                 await interaction.response.send_message(
                     "❌ اكتمل العدد المطلوب من المواطنين.",
@@ -261,7 +274,6 @@ class RoleVoteView(discord.ui.View):
                 )
                 return
 
-            # حفظ التصويت الجديد
             votes_data["voters"][user_id] = vote_type
             save_votes()
 
@@ -272,7 +284,6 @@ class RoleVoteView(discord.ui.View):
 
             print(f"{member} voted as {vote_name}")
 
-    # زر المواطنين
     @discord.ui.button(
         label="المواطنين",
         emoji="✅",
@@ -282,12 +293,8 @@ class RoleVoteView(discord.ui.View):
     )
     async def citizen_button(self, interaction, button):
 
-        await self.process_vote(
-            interaction,
-            "citizen"
-        )
+        await self.process_vote(interaction, "citizen")
 
-    # زر العساكر
     @discord.ui.button(
         label="العساكر",
         emoji="🚔",
@@ -297,12 +304,8 @@ class RoleVoteView(discord.ui.View):
     )
     async def military_button(self, interaction, button):
 
-        await self.process_vote(
-            interaction,
-            "military"
-        )
+        await self.process_vote(interaction, "military")
 
-    # زر إلغاء التصويت
     @discord.ui.button(
         label="إلغاء تصويتي",
         emoji="❌",
@@ -330,7 +333,6 @@ class RoleVoteView(discord.ui.View):
                 )
                 return
 
-            # حذف تصويت العضو
             del votes_data["voters"][user_id]
             save_votes()
 
@@ -394,7 +396,6 @@ async def create_role_poll(ctx):
 
     async with vote_lock:
 
-        # تصفير التصويت القديم
         votes_data["voters"] = {}
         votes_data["message_id"] = None
         save_votes()
@@ -433,9 +434,7 @@ async def hide_citizen_channels(ctx):
     citizen_role = guild.get_role(CITIZEN_ROLE_ID)
 
     if citizen_role is None:
-        await ctx.reply(
-            "❌ لم أجد رتبة المواطن."
-        )
+        await ctx.reply("❌ لم أجد رتبة المواطن.")
         return
 
     await ctx.reply(
@@ -464,10 +463,7 @@ async def hide_citizen_channels(ctx):
 
             success += 1
 
-        except discord.Forbidden:
-            failed += 1
-
-        except discord.HTTPException:
+        except (discord.Forbidden, discord.HTTPException):
             failed += 1
 
     found_channels = [
@@ -514,6 +510,104 @@ async def hide_error(ctx, error):
 
 
 # =====================================
+# أمر .اظهار
+# =====================================
+
+@bot.command(name="اظهار")
+@commands.has_permissions(administrator=True)
+async def show_play_categories(ctx):
+
+    guild = ctx.guild
+
+    if guild is None:
+        return
+
+    play_role = guild.get_role(PLAY_ROLE_ID)
+
+    if play_role is None:
+        await ctx.reply(
+            "❌ لم أجد رتبة تصريح لعب."
+        )
+        return
+
+    await ctx.reply(
+        "⏳ جاري إضافة صلاحية مشاهدة جميع الرومات داخل التصنيفات المحددة..."
+    )
+
+    success = 0
+    failed = 0
+    missing_categories = []
+    processed_channels = set()
+
+    for category_id in PLAY_CATEGORIES:
+
+        category = guild.get_channel(category_id)
+
+        if not isinstance(category, discord.CategoryChannel):
+            missing_categories.append(category_id)
+            continue
+
+        for channel in category.channels:
+
+            if channel.id in processed_channels:
+                continue
+
+            processed_channels.add(channel.id)
+
+            try:
+
+                overwrite = channel.overwrites_for(play_role)
+
+                # السماح بمشاهدة الروم فقط
+                overwrite.view_channel = True
+
+                await channel.set_permissions(
+                    play_role,
+                    overwrite=overwrite,
+                    reason="NJ Play Role Channel Visibility"
+                )
+
+                success += 1
+
+            except (discord.Forbidden, discord.HTTPException):
+                failed += 1
+
+    result = (
+        "✅ **اكتملت عملية إظهار الرومات.**\n\n"
+        f"🎮 الرتبة المستهدفة: {play_role.mention}\n"
+        f"📁 عدد التصنيفات: **{len(PLAY_CATEGORIES)}**\n"
+        f"📺 إجمالي الرومات المكتشفة: **{len(processed_channels)}**\n"
+        f"✅ تم تعديلها بنجاح: **{success}**\n"
+        f"❌ فشل تعديلها: **{failed}**"
+    )
+
+    if missing_categories:
+        result += (
+            "\n\n⚠️ **التصنيفات غير الموجودة:**\n"
+            + "\n".join(
+                f"`{category_id}`"
+                for category_id in missing_categories
+            )
+        )
+
+    await ctx.send(result)
+
+    print(
+        f"NJ Play Visibility Completed: "
+        f"{success} success / {failed} failed"
+    )
+
+
+@show_play_categories.error
+async def show_play_error(ctx, error):
+
+    if isinstance(error, commands.MissingPermissions):
+        await ctx.reply(
+            "❌ هذا الأمر مخصص للإداريين فقط."
+        )
+
+
+# =====================================
 # تسجيل الأسماء وإعطاء تصريح لعب
 # =====================================
 
@@ -526,12 +620,10 @@ async def on_message(message):
     if message.guild is None:
         return
 
-    # معالجة الأوامر
     if message.content.startswith(("-", ".")):
         await bot.process_commands(message)
         return
 
-    # روم تسجيل الاسم
     if message.channel.id == NAME_CHANNEL_ID:
 
         name = message.content.strip()
@@ -546,7 +638,6 @@ async def on_message(message):
             return
 
         member = message.author
-
         play_role = message.guild.get_role(PLAY_ROLE_ID)
 
         if play_role is None:
@@ -557,20 +648,17 @@ async def on_message(message):
 
         try:
 
-            # تغيير لقب العضو
             await member.edit(
                 nick=f"NJ | {name}",
                 reason="NJ Name Registration"
             )
 
-            # إعطاء رتبة تصريح لعب فقط
             if play_role not in member.roles:
                 await member.add_roles(
                     play_role,
                     reason="NJ Name Registration"
                 )
 
-            # حذف رسالة التسجيل
             await message.delete()
 
             print(
