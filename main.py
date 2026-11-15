@@ -1098,6 +1098,18 @@ async def hide_citizen_channels(ctx):
     await ctx.send(result)
 
 
+
+# =========================================================
+# كولداون أمر الأونر
+# =========================================================
+
+OWNER_COOLDOWN = commands.CooldownMapping.from_cooldown(
+    1,
+    60,
+    commands.BucketType.user
+)
+
+
 # =========================================================
 # أمر طلب الأونر
 # =========================================================
@@ -1105,30 +1117,42 @@ async def hide_citizen_channels(ctx):
 @bot.command(name="اونر")
 async def request_owner(ctx):
 
+    # التحقق من صلاحيات الإدارة
     if not is_admin(ctx.author):
-
         return await ctx.reply(
             "❌ الأمر مخصص للإدارة فقط.",
             mention_author=False
         )
 
+    # التحقق من الكولداون
+    bucket = OWNER_COOLDOWN.get_bucket(ctx.message)
+    retry_after = bucket.update_rate_limit()
+
+    if retry_after:
+        return await ctx.reply(
+            f"⏳ باقي **{int(retry_after) + 1} ثانية** على استخدام الأمر.",
+            mention_author=False
+        )
+
+    # التأكد من وجود رتبة الأونر
     owner_role = ctx.guild.get_role(OWNER_ROLE_ID)
 
     if owner_role is None:
-
         return await ctx.reply(
             "❌ ما لقيت رتبة الأونر."
         )
 
-    channel_name = ctx.channel.name.lower()
+    channel = ctx.channel
+    channel_name = channel.name.lower()
 
+    # الكلمات التي تحدد رومات الدعم والتكتات
     support_keywords = [
-        "دعم فني",
-        "دعم-فني",
         "ticket",
         "tickets",
         "تكت",
         "تذاكر",
+        "دعم-فني",
+        "دعم فني",
         "support"
     ]
 
@@ -1139,23 +1163,39 @@ async def request_owner(ctx):
 
     # الرومات العادية: منشن فقط
     if not is_support_channel:
-
-        await ctx.send(
+        return await ctx.send(
             owner_role.mention,
             allowed_mentions=discord.AllowedMentions(
                 roles=True
             )
         )
 
-        return
+    # تغيير اسم روم الدعم
+    try:
+        await channel.edit(
+            name="مطلوب-اونر",
+            reason=f"Owner requested by {ctx.author}"
+        )
 
-    # رومات الدعم والتكتات
+    except discord.Forbidden:
+        return await ctx.reply(
+            "❌ ما قدرت أغير اسم الروم. تأكد من صلاحية Manage Channels."
+        )
+
+    except discord.HTTPException as error:
+        print(f"Owner channel rename error: {error}")
+
+        return await ctx.reply(
+            "❌ حصل خطأ أثناء تغيير اسم الروم."
+        )
+
+    # إنشاء رسالة طلب الأونر
     embed = discord.Embed(
         title="📢 مطلوب أونر",
         description=(
-            "**تم طلب حضور الأونر.**\n\n"
+            "**تم طلب حضور الأونر في هذه التذكرة.**\n\n"
             f"👤 **طالب الحضور:** {ctx.author.mention}\n"
-            f"📍 **الروم:** {ctx.channel.mention}\n\n"
+            f"📍 **الروم:** {channel.mention}\n\n"
             "يرجى من رتبة الأونر التوجه للروم."
         ),
         color=discord.Color.from_rgb(105, 65, 125),
