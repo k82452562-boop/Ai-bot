@@ -19,8 +19,11 @@ PLAY_ROLE_ID = 1569980718262784101
 CITIZEN_ROLE_ID = 1562060450017972305
 MILITARY_ROLE_ID = 1567933281301700628
 
-# رتبة الإدارة الجديدة
+# رتبة الإدارة
 ADMIN_ROLE_ID = 1562449881698668544
+
+# الرتبة الوحيدة المسموح لها بأمر رول
+ROLL_ALLOWED_ROLE_ID = 1567943636413321419
 
 # رتبة الأونر
 OWNER_ROLE_ID = 1571147284136202350
@@ -272,7 +275,7 @@ async def get_audit_entry(
                     if entry.user is None:
                         continue
 
-                    if entry.user.id == bot.user.id:
+                    if bot.user and entry.user.id == bot.user.id:
                         continue
 
                     protection_data["processed_audit"].append(
@@ -712,9 +715,7 @@ async def keep_bot_in_voice():
             elif not voice_client.is_connected():
 
                 try:
-                    await voice_client.disconnect(
-                        force=True
-                    )
+                    await voice_client.disconnect(force=True)
                 except discord.HTTPException:
                     pass
 
@@ -864,7 +865,6 @@ class RoleVoteView(discord.ui.View):
 
             citizens, military = get_vote_counts()
 
-            # احتساب العدد بعد إزالة التصويت السابق
             if previous == "citizen":
                 citizens -= 1
 
@@ -973,10 +973,15 @@ class RoleVoteView(discord.ui.View):
 @bot.command(name="رول")
 async def create_role_poll(ctx):
 
-    if not is_admin(ctx.author):
+    # السماح فقط للرتبة المحددة
+    allowed = any(
+        role.id == ROLL_ALLOWED_ROLE_ID
+        for role in ctx.author.roles
+    )
 
+    if not allowed:
         return await ctx.reply(
-            "❌ الأمر مخصص للإدارة فقط.",
+            "❌ ما تقدر تستخدم الأمر، هذا الأمر مخصص لرتبة الإدارة المحددة فقط.",
             mention_author=False
         )
 
@@ -1098,7 +1103,6 @@ async def hide_citizen_channels(ctx):
     await ctx.send(result)
 
 
-
 # =========================================================
 # كولداون أمر الأونر
 # =========================================================
@@ -1117,14 +1121,13 @@ OWNER_COOLDOWN = commands.CooldownMapping.from_cooldown(
 @bot.command(name="اونر")
 async def request_owner(ctx):
 
-    # التحقق من صلاحيات الإدارة
     if not is_admin(ctx.author):
         return await ctx.reply(
             "❌ الأمر مخصص للإدارة فقط.",
             mention_author=False
         )
 
-    # التحقق من الكولداون
+    # الكولداون: مرة كل 60 ثانية لكل مستخدم
     bucket = OWNER_COOLDOWN.get_bucket(ctx.message)
     retry_after = bucket.update_rate_limit()
 
@@ -1134,18 +1137,16 @@ async def request_owner(ctx):
             mention_author=False
         )
 
-    # التأكد من وجود رتبة الأونر
     owner_role = ctx.guild.get_role(OWNER_ROLE_ID)
 
     if owner_role is None:
         return await ctx.reply(
-            "❌ ما لقيت رتبة الأونر."
+            "❌ ما لقيت رتبة الأونر. تأكد من ID الرتبة."
         )
 
     channel = ctx.channel
     channel_name = channel.name.lower()
 
-    # الكلمات التي تحدد رومات الدعم والتكتات
     support_keywords = [
         "ticket",
         "tickets",
@@ -1161,50 +1162,77 @@ async def request_owner(ctx):
         for keyword in support_keywords
     )
 
-    # الرومات العادية: منشن فقط
-    if not is_support_channel:
-        return await ctx.send(
-            owner_role.mention,
-            allowed_mentions=discord.AllowedMentions(
-                roles=True
+    # تغيير اسم الروم إذا كان روم دعم أو تكت
+    rename_status = "لم يتم تغيير اسم الروم"
+
+    if is_support_channel:
+        try:
+            await channel.edit(
+                name="مطلوب-اونر",
+                reason=f"Owner requested by {ctx.author}"
             )
-        )
+            rename_status = "تم تغيير اسم الروم إلى مطلوب-اونر"
 
-    # تغيير اسم روم الدعم
-    try:
-        await channel.edit(
-            name="مطلوب-اونر",
-            reason=f"Owner requested by {ctx.author}"
-        )
+        except discord.Forbidden:
+            rename_status = "تعذر تغيير اسم الروم: صلاحية Manage Channels غير متوفرة"
 
-    except discord.Forbidden:
-        return await ctx.reply(
-            "❌ ما قدرت أغير اسم الروم. تأكد من صلاحية Manage Channels."
-        )
+        except discord.HTTPException as error:
+            print(f"Owner channel rename error: {error}")
+            rename_status = "حدث خطأ أثناء تغيير اسم الروم"
 
-    except discord.HTTPException as error:
-        print(f"Owner channel rename error: {error}")
-
-        return await ctx.reply(
-            "❌ حصل خطأ أثناء تغيير اسم الروم."
-        )
-
-    # إنشاء رسالة طلب الأونر
+    # إنشاء الإمبايد دائمًا، سواء كان الروم تكت أو روم عادي
     embed = discord.Embed(
-        title="📢 مطلوب أونر",
+        title="📢 مطلوب حضور الأونر",
         description=(
-            "**تم طلب حضور الأونر في هذه التذكرة.**\n\n"
-            f"👤 **طالب الحضور:** {ctx.author.mention}\n"
-            f"📍 **الروم:** {channel.mention}\n\n"
-            "يرجى من رتبة الأونر التوجه للروم."
+            "━━━━━━━━━━━━━━━━━━━━\n"
+            "**تم تسجيل طلب حضور الأونر.**\n"
+            "يرجى من المسؤولين التوجه إلى الروم ومتابعة الطلب.\n"
+            "━━━━━━━━━━━━━━━━━━━━"
         ),
         color=discord.Color.from_rgb(105, 65, 125),
         timestamp=discord.utils.utcnow()
     )
 
-    embed.set_footer(
-        text="منتدى نجد | طلب حضور الأونر"
+    embed.add_field(
+        name="👤 الإداري صاحب الطلب",
+        value=(
+            f"{ctx.author.mention}\n"
+            f"`{ctx.author.display_name}`"
+        ),
+        inline=True
     )
+
+    embed.add_field(
+        name="📍 الروم المطلوب",
+        value=channel.mention,
+        inline=True
+    )
+
+    embed.add_field(
+        name="🛡️ الرتبة المطلوبة",
+        value=owner_role.mention,
+        inline=False
+    )
+
+    embed.add_field(
+        name="⚙️ حالة الروم",
+        value=rename_status,
+        inline=False
+    )
+
+    embed.set_thumbnail(
+        url=ctx.author.display_avatar.url
+    )
+
+    if ctx.guild.icon:
+        embed.set_footer(
+            text="منتدى نجد | نظام طلب حضور الأونر",
+            icon_url=ctx.guild.icon.url
+        )
+    else:
+        embed.set_footer(
+            text="منتدى نجد | نظام طلب حضور الأونر"
+        )
 
     await ctx.send(
         content=owner_role.mention,
@@ -1226,9 +1254,8 @@ async def on_message(message):
     if message.author.bot or message.guild is None:
         return
 
-    # تشغيل الأوامر
+    # معالجة أوامر البوت
     if message.content.startswith(("-", ".")):
-
         await bot.process_commands(message)
         return
 
@@ -1240,7 +1267,6 @@ async def on_message(message):
             return
 
         if len(name) > 25:
-
             return await message.reply(
                 "❌ الاسم طويل جداً، الحد الأقصى 25 حرف."
             )
@@ -1252,7 +1278,6 @@ async def on_message(message):
         )
 
         if play_role is None:
-
             return await message.reply(
                 "❌ ما لقيت رتبة تصريح اللعب."
             )
@@ -1265,7 +1290,6 @@ async def on_message(message):
             )
 
             if play_role not in member.roles:
-
                 await member.add_roles(
                     play_role,
                     reason="NJ Name Registration"
@@ -1284,6 +1308,7 @@ async def on_message(message):
 
             print(f"Registration error: {error}")
 
+    # معالجة أوامر الرسائل مرة واحدة
     await bot.process_commands(message)
 
 
@@ -1298,14 +1323,12 @@ async def on_command_error(ctx, error):
         return
 
     if isinstance(error, commands.MissingPermissions):
-
         return await ctx.reply(
             "❌ ما عندك الصلاحية المطلوبة.",
             mention_author=False
         )
 
     if isinstance(error, commands.CommandOnCooldown):
-
         return await ctx.reply(
             f"⏳ انتظر {error.retry_after:.1f} ثانية.",
             mention_author=False
@@ -1330,22 +1353,17 @@ async def on_command_error(ctx, error):
 async def on_ready():
 
     if not getattr(bot, "_systems_initialized", False):
-
         bot.add_view(RoleVoteView())
-
         bot._systems_initialized = True
 
     if not getattr(bot, "_voice_task_started", False):
-
         bot._voice_task_started = True
-
-        bot.loop.create_task(
-            keep_bot_in_voice()
-        )
+        bot.loop.create_task(keep_bot_in_voice())
 
     print("=" * 50)
     print(f"Bot Online: {bot.user}")
     print(f"Admin Role: {ADMIN_ROLE_ID}")
+    print(f"Roll Allowed Role: {ROLL_ALLOWED_ROLE_ID}")
     print(f"Owner Role: {OWNER_ROLE_ID}")
     print("Registration: ON")
     print("Voting System: ON")
@@ -1357,6 +1375,8 @@ async def on_ready():
     print("Role Delete Protection: ON")
     print("Channel Delete Protection: ON")
     print("Owner Command: ON")
+    print("Owner Embed: ON")
+    print("Owner Cooldown: 60 seconds")
     print("Private Alerts: ON")
     print("Ticket System: REMOVED")
     print("=" * 50)
