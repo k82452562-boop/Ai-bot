@@ -1,4 +1,3 @@
-
 import os
 import json
 import time
@@ -6,6 +5,7 @@ import asyncio
 import discord
 
 from discord.ext import commands
+from discord import app_commands
 
 # =========================================================
 # الإعدادات العامة
@@ -19,13 +19,8 @@ PLAY_ROLE_ID = 1569980718262784101
 CITIZEN_ROLE_ID = 1562060450017972305
 MILITARY_ROLE_ID = 1567933281301700628
 
-# رتبة الإدارة
 ADMIN_ROLE_ID = 1562449881698668544
-
-# الرتبة الوحيدة المسموح لها بأمر رول
 ROLL_ALLOWED_ROLE_ID = 1567943636413321419
-
-# رتبة الأونر
 OWNER_ROLE_ID = 1571147284136202350
 
 RULES_CHANNEL_ID = 1569788828296679565
@@ -182,6 +177,77 @@ def is_admin(member):
 
 
 # =========================================================
+# نظام حماية الأونرات والرتب العليا
+# =========================================================
+
+async def get_executor_member(guild, executor):
+    """
+    يحاول جلب العضو من السيرفر حتى لو كان
+    منفذ العملية في Audit Log من نوع discord.User.
+    """
+
+    if executor is None:
+        return None
+
+    if isinstance(executor, discord.Member):
+        return executor
+
+    try:
+        return await guild.fetch_member(executor.id)
+
+    except (
+        discord.NotFound,
+        discord.Forbidden,
+        discord.HTTPException
+    ):
+        return None
+
+
+async def is_protected_executor(guild, executor):
+    """
+    يرجع True إذا كان الشخص محميًا.
+    عند تعذر التأكد من رتبته، يتعامل معه النظام كمحمي
+    حتى لا يطرد شخصًا بالخطأ.
+    """
+
+    if executor is None:
+        return True
+
+    if executor.bot:
+        return True
+
+    # حماية مالك السيرفر
+    if executor.id == guild.owner_id:
+        return True
+
+    member = await get_executor_member(guild, executor)
+
+    # إذا تعذر جلب العضو، لا نخاطر بطرده
+    if member is None:
+        return True
+
+    # حماية مالك السيرفر
+    if member.id == guild.owner_id:
+        return True
+
+    # حماية رتبة الأونر
+    if any(role.id == OWNER_ROLE_ID for role in member.roles):
+        return True
+
+    # حماية البوت نفسه
+    bot_member = guild.me
+
+    if bot_member is None:
+        return True
+
+    # حماية أي شخص رتبته أعلى أو مساوية لرتبة البوت
+    if member.top_role >= bot_member.top_role:
+        return True
+
+    return False
+
+
+# =========================================================
 # أدوات التنبيهات الخاصة
 # =========================================================
 
@@ -304,7 +370,7 @@ async def get_audit_entry(
 
 
 # =========================================================
-# نظام طرد المخالف
+# نظام طرد المخالف مع حماية الأونرات
 # =========================================================
 
 async def punish_executor(
@@ -316,12 +382,20 @@ async def punish_executor(
     if executor is None:
         return False
 
-    if executor.bot:
+    if await is_protected_executor(guild, executor):
+        print(
+            f"Protected executor was not kicked: {executor.id}"
+        )
+        return False
+
+    member = await get_executor_member(guild, executor)
+
+    if member is None:
         return False
 
     try:
         await guild.kick(
-            executor,
+            member,
             reason=f"NJ Anti-Nuke: {reason}"
         )
 
@@ -397,14 +471,15 @@ async def register_ban(
             "تجاوز حد عمليات الباند"
         )
 
-        status = (
-            "تم طرد منفذ العملية."
-            if kicked
-            else "تعذر طرد منفذ العملية بسبب الصلاحيات أو الرتب."
-        )
+        if await is_protected_executor(guild, executor):
+            status = "لم يتم الطرد: الشخص محمي برتبة الأونر أو برتبة مساوية/أعلى من البوت."
+        elif kicked:
+            status = "تم طرد منفذ العملية."
+        else:
+            status = "تعذر طرد منفذ العملية بسبب الصلاحيات أو الرتب."
 
         description = (
-            f"**الشخص المسؤول:** {executor.mention}\n"
+            f"**الشخص المسؤول:** <@{executor.id}>\n"
             f"**العضو المستهدف:** `{target}`\n"
             f"**الباند خلال الساعة:** {hourly_count}/5\n"
             f"**الباند خلال 24 ساعة:** {daily_count}/5\n"
@@ -420,7 +495,7 @@ async def register_ban(
     else:
 
         description = (
-            f"**الشخص المسؤول:** {executor.mention}\n"
+            f"**الشخص المسؤول:** <@{executor.id}>\n"
             f"**العضو المستهدف:** `{target}`\n"
             f"**الباند خلال الساعة:** {hourly_count}/5\n"
             f"**الباند خلال 24 ساعة:** {daily_count}/5\n"
@@ -484,19 +559,8 @@ async def on_member_join(member):
         member.id
     )
 
+    # لا نطرد البوت إذا لم نعرف من أضافه
     if entry is None:
-
-        bot_kicked = False
-
-        try:
-            await guild.kick(
-                member,
-                reason="NJ Anti-Nuke: Unauthorized bot"
-            )
-            bot_kicked = True
-
-        except discord.HTTPException:
-            pass
 
         await send_protection_alert(
             guild,
@@ -504,9 +568,11 @@ async def on_member_join(member):
             (
                 f"**البوت:** `{member}`\n"
                 f"**ID:** `{member.id}`\n"
-                f"**طرد البوت:** {'تم' if bot_kicked else 'تعذر'}\n"
-                "تعذر تحديد الشخص الذي أضافه من سجل التدقيق."
-            )
+                "**الإجراء:** لم يتم طرد البوت.\n"
+                "تعذر تحديد الشخص الذي أضافه من سجل التدقيق، "
+                "لذلك لم يتم اتخاذ إجراء تلقائي."
+            ),
+            discord.Color.orange()
         )
 
         return
@@ -514,6 +580,24 @@ async def on_member_join(member):
     executor = entry.user
 
     if executor is None or executor.bot:
+        return
+
+    # إذا كان الشخص محميًا، لا نطرده ولا نطرد البوت الذي أضافه
+    if await is_protected_executor(guild, executor):
+
+        await send_protection_alert(
+            guild,
+            "إضافة بوت بواسطة شخص محمي",
+            (
+                f"**الشخص الذي أضاف البوت:** <@{executor.id}>\n"
+                f"**البوت المضاف:** `{member}`\n"
+                f"**معرف البوت:** `{member.id}`\n\n"
+                "🛡️ **لم يتم طرد الشخص أو البوت.**\n"
+                "الشخص يحمل رتبة محمية أو رتبته مساوية/أعلى من رتبة البوت."
+            ),
+            discord.Color.green()
+        )
+
         return
 
     actor_kicked = await punish_executor(
@@ -539,7 +623,7 @@ async def on_member_join(member):
         print(f"Added bot kick error: {error}")
 
     description = (
-        f"**الشخص الذي أضاف البوت:** {executor.mention}\n"
+        f"**الشخص الذي أضاف البوت:** <@{executor.id}>\n"
         f"**البوت المضاف:** `{member}`\n"
         f"**معرف البوت:** `{member.id}`\n\n"
         f"**طرد الشخص:** {'تم' if actor_kicked else 'تعذر'}\n"
@@ -588,17 +672,24 @@ async def on_guild_role_delete(role):
     if executor is None or executor.bot:
         return
 
+    protected = await is_protected_executor(guild, executor)
+
     kicked = await punish_executor(
         guild,
         executor,
         "حذف رتبة من السيرفر"
     )
 
+    if protected:
+        status = "لم يتم الطرد: الشخص محمي."
+    else:
+        status = "تم الطرد" if kicked else "تعذر الطرد"
+
     description = (
-        f"**الشخص المسؤول:** {executor.mention}\n"
+        f"**الشخص المسؤول:** <@{executor.id}>\n"
         f"**الرتبة المحذوفة:** `{role.name}`\n"
         f"**معرف الرتبة:** `{role.id}`\n"
-        f"**الإجراء:** {'تم الطرد' if kicked else 'تعذر الطرد'}"
+        f"**الإجراء:** {status}"
     )
 
     await send_protection_alert(
@@ -643,17 +734,24 @@ async def on_guild_channel_delete(channel):
     if executor is None or executor.bot:
         return
 
+    protected = await is_protected_executor(guild, executor)
+
     kicked = await punish_executor(
         guild,
         executor,
         "حذف روم من السيرفر"
     )
 
+    if protected:
+        status = "لم يتم الطرد: الشخص محمي."
+    else:
+        status = "تم الطرد" if kicked else "تعذر الطرد"
+
     description = (
-        f"**الشخص المسؤول:** {executor.mention}\n"
+        f"**الشخص المسؤول:** <@{executor.id}>\n"
         f"**الروم المحذوف:** `{channel.name}`\n"
         f"**معرف الروم:** `{channel.id}`\n"
-        f"**الإجراء:** {'تم الطرد' if kicked else 'تعذر الطرد'}"
+        f"**الإجراء:** {status}"
     )
 
     await send_protection_alert(
@@ -793,7 +891,10 @@ def create_vote_embed():
 
     embed.add_field(
         name="📜 قوانين الرول بلاي",
-        value=f"يرجى قراءة القوانين قبل التصويت.\n📌 <#{RULES_CHANNEL_ID}>",
+        value=(
+            f"يرجى قراءة القوانين قبل التصويت.\n"
+            f"📌 <#{RULES_CHANNEL_ID}>"
+        ),
         inline=False
     )
 
@@ -973,7 +1074,6 @@ class RoleVoteView(discord.ui.View):
 @bot.command(name="رول")
 async def create_role_poll(ctx):
 
-    # السماح فقط للرتبة المحددة
     allowed = any(
         role.id == ROLL_ALLOWED_ROLE_ID
         for role in ctx.author.roles
@@ -1127,7 +1227,6 @@ async def request_owner(ctx):
             mention_author=False
         )
 
-    # الكولداون: مرة كل 60 ثانية لكل مستخدم
     bucket = OWNER_COOLDOWN.get_bucket(ctx.message)
     retry_after = bucket.update_rate_limit()
 
@@ -1162,7 +1261,6 @@ async def request_owner(ctx):
         for keyword in support_keywords
     )
 
-    # تغيير اسم الروم إذا كان روم دعم أو تكت
     rename_status = "لم يتم تغيير اسم الروم"
 
     if is_support_channel:
@@ -1180,7 +1278,6 @@ async def request_owner(ctx):
             print(f"Owner channel rename error: {error}")
             rename_status = "حدث خطأ أثناء تغيير اسم الروم"
 
-    # إنشاء الإمبايد دائمًا، سواء كان الروم تكت أو روم عادي
     embed = discord.Embed(
         title="📢 مطلوب حضور الأونر",
         description=(
@@ -1242,6 +1339,81 @@ async def request_owner(ctx):
             users=True
         )
     )
+
+
+# =========================================================
+# أمر /say
+# =========================================================
+
+@bot.tree.command(
+    name="say",
+    description="إرسال رسالة باسم البوت"
+)
+@app_commands.describe(
+    message="اكتب الرسالة التي تريد من البوت إرسالها"
+)
+async def say_command(
+    interaction: discord.Interaction,
+    message: str
+):
+
+    if interaction.guild is None:
+        return await interaction.response.send_message(
+            "❌ الأمر متاح داخل السيرفر فقط.",
+            ephemeral=True
+        )
+
+    if not isinstance(interaction.user, discord.Member):
+        return await interaction.response.send_message(
+            "❌ تعذر التحقق من صلاحياتك.",
+            ephemeral=True
+        )
+
+    if not is_admin(interaction.user):
+        return await interaction.response.send_message(
+            "❌ الأمر مخصص للإدارة فقط.",
+            ephemeral=True
+        )
+
+    message = message.strip()
+
+    if not message:
+        return await interaction.response.send_message(
+            "❌ اكتب الرسالة أولًا.",
+            ephemeral=True
+        )
+
+    if len(message) > 2000:
+        return await interaction.response.send_message(
+            "❌ الحد الأقصى للرسالة 2000 حرف.",
+            ephemeral=True
+        )
+
+    try:
+        await interaction.channel.send(
+            message,
+            allowed_mentions=discord.AllowedMentions.none()
+        )
+
+        await interaction.response.send_message(
+            "✅ تم إرسال الرسالة.",
+            ephemeral=True
+        )
+
+    except discord.Forbidden:
+        await interaction.response.send_message(
+            "❌ البوت ما عنده صلاحية إرسال الرسائل في هذا الروم.",
+            ephemeral=True
+        )
+
+    except discord.HTTPException as error:
+        print(f"Say command error: {error}")
+
+        if not interaction.response.is_done():
+            await interaction.response.send_message(
+                "❌ حصل خطأ أثناء إرسال الرسالة.",
+                ephemeral=True
+            )
 
 
 # =========================================================
@@ -1308,7 +1480,6 @@ async def on_message(message):
 
             print(f"Registration error: {error}")
 
-    # معالجة أوامر الرسائل مرة واحدة
     await bot.process_commands(message)
 
 
@@ -1353,7 +1524,15 @@ async def on_command_error(ctx, error):
 async def on_ready():
 
     if not getattr(bot, "_systems_initialized", False):
+
         bot.add_view(RoleVoteView())
+
+        try:
+            synced = await bot.tree.sync()
+            print(f"Slash commands synced: {len(synced)}")
+        except discord.HTTPException as error:
+            print(f"Slash command sync error: {error}")
+
         bot._systems_initialized = True
 
     if not getattr(bot, "_voice_task_started", False):
@@ -1372,11 +1551,14 @@ async def on_ready():
     print("Anti-Nuke Protection: ON")
     print("Ban Protection: 5/hour + 5/day")
     print("Bot Protection: ON")
+    print("Protected Owners: ON")
+    print("Protected Higher/Equal Roles: ON")
     print("Role Delete Protection: ON")
     print("Channel Delete Protection: ON")
     print("Owner Command: ON")
     print("Owner Embed: ON")
     print("Owner Cooldown: 60 seconds")
+    print("Say Slash Command: ON")
     print("Private Alerts: ON")
     print("Ticket System: REMOVED")
     print("=" * 50)
